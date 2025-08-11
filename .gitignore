@@ -1,0 +1,18 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# Local runtime stuff
+.env
+mlb_cache.sqlite
+mlb_state.json
+
+# Data outputs
+parquet_out/
+*.parquet
+
+# OS junk
+.DS_Store
