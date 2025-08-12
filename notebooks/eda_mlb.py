@@ -9,6 +9,7 @@
 # %%
 # Imports and config
 import os
+import sys
 from pathlib import Path
 import pandas as pd
 import numpy as np
@@ -20,9 +21,11 @@ from dotenv import load_dotenv
 sns.set_theme(style="whitegrid")
 pd.set_option("display.max_columns", 200)
 
-# Load .env from project root if present
+# Load .env from project root if present and ensure local package import works
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 load_dotenv(ROOT / ".env")
+from mlb_stats_etl.db import DEFAULT_KEYS
 
 # Toggle sources
 USE_DB = True  # set False to load from Parquet files in PARQUET_DIR
@@ -36,6 +39,80 @@ ENGINE = create_engine(DB_URL) if USE_DB else None
 print("DB_URL:", DB_URL if USE_DB else "<parquet mode>")
 
 # %% [markdown]
+# Schema overview and samples
+# Inspect table structures and preview first 10 rows to understand available data.
+
+# %%
+MLB_TABLES = sorted(DEFAULT_KEYS.keys())
+
+def describe_db_tables() -> None:
+    if not USE_DB:
+        print("DB not in use; skipping DB schema introspection.")
+        return
+    try:
+        db_name = pd.read_sql("SELECT DATABASE() AS db", ENGINE)["db"].iloc[0]
+        print(f"Using database: {db_name}")
+    except Exception as exc:
+        print("Could not query database name:", exc)
+        return
+
+    try:
+        available = pd.read_sql(
+            "SELECT table_name FROM information_schema.tables WHERE table_schema = DATABASE() ORDER BY table_name",
+            ENGINE,
+        )["table_name"].tolist()
+    except Exception as exc:
+        print("Could not list tables:", exc)
+        return
+
+    targets = [t for t in MLB_TABLES if t in available]
+    print(f"Found {len(targets)} MLB tables in DB.")
+
+    for t in targets:
+        print("\n=== Table:", t, "===")
+        try:
+            schema_df = pd.read_sql(
+                """
+                SELECT column_name, data_type, is_nullable, column_key
+                FROM information_schema.columns
+                WHERE table_schema = DATABASE() AND table_name = %s
+                ORDER BY ordinal_position
+                """,
+                ENGINE,
+                params=(t,),
+            )
+            print(schema_df)
+        except Exception as exc:
+            print(f"Failed to describe columns for {t}:", exc)
+
+        try:
+            sample_df = pd.read_sql(f"SELECT * FROM `{t}` LIMIT 10", ENGINE)
+            print("-- sample rows --")
+            print(sample_df)
+        except Exception as exc:
+            print(f"Failed to sample rows for {t}:", exc)
+
+def describe_parquet_tables() -> None:
+    print(f"Inspecting Parquet directory: {PARQUET_DIR}")
+    for t in MLB_TABLES:
+        p = PARQUET_DIR / f"{t}.parquet"
+        if not p.exists():
+            continue
+        print("\n=== Parquet:", t, "===")
+        try:
+            df = pd.read_parquet(p)
+            print("dtypes:\n", df.dtypes)
+            print("-- sample rows --")
+            print(df.head(10))
+        except Exception as exc:
+            print(f"Failed to read {p}:", exc)
+
+if USE_DB:
+    describe_db_tables()
+else:
+    describe_parquet_tables()
+
+# %% [markdown]
 # Load core tables
 # Adjust SEASON_START and SEASON_END to scope the data volume.
 
@@ -46,11 +123,23 @@ SEASON_END = 2025
 
 def read_table(name: str) -> pd.DataFrame:
     if USE_DB:
-        q = f"SELECT * FROM `{name}`"
-        # season filter for large tables
-        if name in {"games", "game_players", "game_teams", "linescores", "plays", "pitches"}:
-            q += f" WHERE season BETWEEN {SEASON_START} AND {SEASON_END}"
-        return pd.read_sql(q, ENGINE)
+        # Apply season filter directly for games; join to games for related detail tables
+        if name == "games":
+            q = (
+                "SELECT * FROM `games` WHERE season BETWEEN %s AND %s"
+            )
+            return pd.read_sql(q, ENGINE, params=(SEASON_START, SEASON_END))
+
+        if name in {"game_players", "game_teams", "linescores", "plays", "pitches"}:
+            q = (
+                f"SELECT t.* FROM `{name}` t "
+                "JOIN `games` g ON g.gamePk = t.gamePk "
+                "WHERE g.season BETWEEN %s AND %s"
+            )
+            return pd.read_sql(q, ENGINE, params=(SEASON_START, SEASON_END))
+
+        # All other small tables unfiltered
+        return pd.read_sql(f"SELECT * FROM `{name}`", ENGINE)
     p = PARQUET_DIR / f"{name}.parquet"
     return pd.read_parquet(p) if p.exists() else pd.DataFrame()
 
@@ -103,7 +192,9 @@ meta_cols = [
     "away_team_name",
 ]
 
-gm = games[meta_cols].drop_duplicates("gamePk")
+gm = games[meta_cols].drop_duplicates("gamePk").copy()
+# Align dtype of season for merges
+gm["season"] = pd.to_numeric(gm["season"], errors="coerce").astype("Int64")
 gm = gm.merge(home[["gamePk", "home_runs"]], on="gamePk", how="left").merge(
     away[["gamePk", "away_runs"]], on="gamePk", how="left"
 )
@@ -126,11 +217,13 @@ home_feat = (
     .rename(columns={"stand_team_id": "home_team_id", "prev_season": "season", "pct": "home_prev_pct"})
     .copy()
 )
+home_feat["season"] = pd.to_numeric(home_feat["season"], errors="coerce").astype("Int64")
 away_feat = (
     stand[["stand_team_id", "prev_season", "pct"]]
     .rename(columns={"stand_team_id": "away_team_id", "prev_season": "season", "pct": "away_prev_pct"})
     .copy()
 )
+away_feat["season"] = pd.to_numeric(away_feat["season"], errors="coerce").astype("Int64")
 
 Xy = (
     gm.merge(home_feat, on=["home_team_id", "season"], how="left")
