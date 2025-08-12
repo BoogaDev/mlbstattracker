@@ -1,6 +1,5 @@
 from __future__ import annotations
 from typing import Dict, List, Sequence
-import math
 import pandas as pd
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import Engine
@@ -20,8 +19,7 @@ def ensure_table_exists(engine: Engine, table_name: str, df: pd.DataFrame) -> No
     with engine.begin() as conn:
         res = conn.execute(exists_sql, {"t": table_name}).fetchone()
         if res:
-            return  # already exists
-    # Create with 0 rows to only emit CREATE TABLE DDL
+            return
     df.iloc[0:0].to_sql(table_name, engine, index=False, if_exists="fail")
 
 def create_unique_index(engine: Engine, table: str, index_name: str, cols: Sequence[str]) -> None:
@@ -31,7 +29,6 @@ def create_unique_index(engine: Engine, table: str, index_name: str, cols: Seque
         with engine.begin() as conn:
             conn.exec_driver_sql(stmt)
     except Exception:
-        # ignore if it already exists
         pass
 
 def _chunk_iter(seq, size: int):
@@ -39,7 +36,6 @@ def _chunk_iter(seq, size: int):
         yield seq[i:i+size]
 
 def replace_into(engine: Engine, table: str, df: pd.DataFrame, chunk_size: int = 1000) -> int:
-    """Bulk upsert by REPLACE INTO (requires PK or UNIQUE index on target)."""
     if df.empty:
         return 0
     cols = list(df.columns)
@@ -53,7 +49,6 @@ def replace_into(engine: Engine, table: str, df: pd.DataFrame, chunk_size: int =
             total += len(chunk)
     return total
 
-# Main entry for writing many tables with default PKs/indices
 DEFAULT_KEYS: Dict[str, List[str]] = {
     "sports": ["id"],
     "leagues": ["id"],
@@ -71,7 +66,6 @@ DEFAULT_KEYS: Dict[str, List[str]] = {
     "standings": ["season", "league_id", "division_id", "team_id"],
     "transactions": ["id"],
     "leaders_players": ["season", "stat_group", "category", "rank", "person_id"],
-    "leaders_teams": ["season", "stat_group", "category", "rank", "team_id"],
     "player_stats_season": ["season", "group", "person_id"],
     "team_stats_season": ["season", "group", "team_id"],
 }
@@ -83,20 +77,14 @@ def write_tables_to_db(tables: Dict[str, pd.DataFrame], engine: Engine | None = 
     for name, df in tables.items():
         if df is None or df.empty:
             continue
-        # Ensure table exists
         try:
             ensure_table_exists(engine, name, df)
         except Exception:
-            # Table probably exists; continue
             pass
-
-        # Ensure we have a UNIQUE index on the PK set
         pk = keys.get(name)
         if pk:
             idx_name = f"uniq_{name}_{'_'.join(pk)}"
             create_unique_index(engine, name, idx_name, pk)
-
-        # Write via REPLACE INTO
         written = replace_into(engine, name, df)
         counts[name] = written
     return counts

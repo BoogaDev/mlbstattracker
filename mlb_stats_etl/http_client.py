@@ -1,7 +1,8 @@
 from __future__ import annotations
-import time, threading, logging
+import time, logging
 from typing import Any, Dict, Optional
 import requests
+import sqlite3
 from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 from .config import BASE_URL, TIMEOUT_SECONDS, REQS_PER_SEC, CACHE_ENABLED, CACHE_PATH, CACHE_TTL_SECONDS
 
@@ -13,7 +14,6 @@ except Exception:
 log = logging.getLogger("mlb_stats_etl.http")
 
 class RateLimiter:
-    """Simple token-bucket-like limiter: allow N reqs/second."""
     def __init__(self, reqs_per_sec: float):
         self.min_interval = 1.0 / max(reqs_per_sec, 0.1)
         self.last_time = 0.0
@@ -49,11 +49,18 @@ class MLBClient:
         retry=retry_if_exception_type((requests.RequestException,)),
     )
     def get(self, path: str, params: Optional[Dict[str, Any]]=None, *, timeout: float=TIMEOUT_SECONDS) -> Dict[str, Any]:
-        """GET the MLB Stats API at the given path (must begin with '/')."""
         if not path.startswith("/"):
             path = "/" + path
         url = BASE_URL + path
         self.limiter.wait()
-        resp = self.sess.get(url, params=params, timeout=timeout)
+        try:
+            resp = self.sess.get(url, params=params, timeout=timeout)
+        except sqlite3.Error as e:
+            # If cache backend fails (e.g., corrupt SQLite file), disable cache and retry once
+            log.warning("requests-cache backend error (%s); disabling cache and retrying GET %s", e.__class__.__name__, url)
+            self.sess = requests.Session()
+            resp = self.sess.get(url, params=params, timeout=timeout)
+        cache_hit = bool(getattr(resp, 'from_cache', False))
+        log.debug('GET %s params=%s cache_hit=%s status=%s', url, params, cache_hit, resp.status_code)
         resp.raise_for_status()
         return resp.json()
