@@ -9,10 +9,12 @@ class JsonFormatter(logging.Formatter):
             "name": record.name,
             "msg": record.getMessage(),
             "time": self.formatTime(record, datefmt="%Y-%m-%dT%H:%M:%S"),
+            "pid": record.process,
         }
         if record.exc_info:
             payload["exc_info"] = self.formatException(record.exc_info)
         return json.dumps(payload, ensure_ascii=False)
+
 
 def setup_logging(level: Optional[str]=None, json_mode: Optional[bool]=None) -> None:
     level = (level or os.getenv("LOG_LEVEL", "INFO")).upper()
@@ -26,6 +28,6 @@ def setup_logging(level: Optional[str]=None, json_mode: Optional[bool]=None) -> 
     if json_mode:
         fmt = JsonFormatter()
     else:
-        fmt = logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | %(message)s", "%H:%M:%S")
+        fmt = logging.Formatter("%(asctime)s | %(levelname)s | %(name)s | pid=%(process)s | %(message)s", "%H:%M:%S")
     handler.setFormatter(fmt)
     root.addHandler(handler)

@@ -53,6 +53,7 @@ class MLBClient:
             path = "/" + path
         url = BASE_URL + path
         self.limiter.wait()
+        start = time.perf_counter()
         try:
             resp = self.sess.get(url, params=params, timeout=timeout)
         except sqlite3.Error as e:
@@ -60,7 +61,8 @@ class MLBClient:
             log.warning("requests-cache backend error (%s); disabling cache and retrying GET %s", e.__class__.__name__, url)
             self.sess = requests.Session()
             resp = self.sess.get(url, params=params, timeout=timeout)
+        elapsed_ms = int((time.perf_counter() - start) * 1000)
         cache_hit = bool(getattr(resp, 'from_cache', False))
-        log.debug('GET %s params=%s cache_hit=%s status=%s', url, params, cache_hit, resp.status_code)
+        log.debug('GET %s params=%s cache_hit=%s status=%s elapsed_ms=%s', url, params, cache_hit, resp.status_code, elapsed_ms)
         resp.raise_for_status()
         return resp.json()

@@ -9,6 +9,7 @@ from .http_client import MLBClient
 
 log = logging.getLogger('mlb_stats_etl.stats')
 
+
 def fetch_leaderboards(client: MLBClient, season: int, categories: List[str], stat_group: str="hitting", player_pool: str="ALL", limit: int=100, on_progress: Optional[ProgressCallback]=None) -> pd.DataFrame:
     if on_progress: on_progress('leaders:start', {"season": season, "group": stat_group, "categories": categories})
     rows = []
@@ -39,7 +40,9 @@ def fetch_leaderboards(client: MLBClient, season: int, categories: List[str], st
                 })
     df = pd.DataFrame.from_records(rows)
     if on_progress: on_progress('leaders:done', {"season": season, "group": stat_group, "rows": int(df.shape[0])})
+    log.info("Leaderboards season=%s group=%s categories=%s rows=%s", season, stat_group, categories, df.shape[0])
     return df
+
 
 def fetch_player_stats_season(client: MLBClient, season: int, groups: List[str]=["hitting", "pitching", "fielding"], stats: str="season", game_type: str="R", on_progress: Optional[ProgressCallback]=None) -> pd.DataFrame:
     if on_progress: on_progress('player_stats:start', {"season": season, "groups": groups})
@@ -56,10 +59,14 @@ def fetch_player_stats_season(client: MLBClient, season: int, groups: List[str]=
                        "team_id": team.get("id"), "team_name": team.get("name")}
                 for k, v in (stat or {}).items(): rec[k] = v
                 recs.append(rec)
-        dfs.append(pd.DataFrame.from_records(recs))
+        df = pd.DataFrame.from_records(recs)
+        log.info("Player stats season=%s group=%s rows=%s", season, grp, df.shape[0])
+        dfs.append(df)
     out = pd.concat([df for df in dfs if not df.empty], ignore_index=True) if dfs else pd.DataFrame()
     if on_progress: on_progress('player_stats:done', {"season": season, "rows": int(out.shape[0])})
+    log.info("Player stats season=%s total_rows=%s", season, out.shape[0])
     return out
+
 
 def fetch_team_stats_season(client: MLBClient, season: int, groups: List[str]=["hitting", "pitching"], stats: str="season", game_type: str="R", on_progress: Optional[ProgressCallback]=None) -> pd.DataFrame:
     if on_progress: on_progress('player_stats:start', {"season": season, "groups": groups})
@@ -75,7 +82,10 @@ def fetch_team_stats_season(client: MLBClient, season: int, groups: List[str]=["
                 rec = {"season": season, "group": grp, "team_id": team.get("id"), "team_name": team.get("name")}
                 for k, v in (stat or {}).items(): rec[k] = v
                 recs.append(rec)
-        dfs.append(pd.DataFrame.from_records(recs))
+        df = pd.DataFrame.from_records(recs)
+        log.info("Team stats season=%s group=%s rows=%s", season, grp, df.shape[0])
+        dfs.append(df)
     out = pd.concat([df for df in dfs if not df.empty], ignore_index=True) if dfs else pd.DataFrame()
     if on_progress: on_progress('player_stats:done', {"season": season, "rows": int(out.shape[0])})
+    log.info("Team stats season=%s total_rows=%s", season, out.shape[0])
     return out
